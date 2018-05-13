@@ -1,0 +1,122 @@
+---
+title: "Median length of stay by outcome"
+output: html_notebook
+---
+
+Load the data
+
+```{r}
+outcomes <- read.csv('all_intakes_with_outcomes_cleaned.csv', stringsAsFactors=F)
+outcome_categories <- read.csv('outcomes-categorized-complete.csv', stringsAsFactors=F)
+```
+
+Print column names in the two datasets
+
+```{r}
+print(colnames(outcomes))
+print(colnames(outcome_categories))
+```
+
+Check the types of data in each column. For character data, strip any leading or trailing spaces.
+
+```{r}
+str(outcomes)
+```
+
+```{r}
+str(outcome_categories)
+```
+
+```{r}
+normalize_chars <- function(dataframe) {
+  character_column <- sapply(dataframe, is.character) # which columns contain character values
+  no_whitespace_and_lowercase <- data.frame(
+    cbind(sapply(dataframe[, character_column],
+                 function(x){
+                   tolower( # convert to lowercase
+                     enc2utf8( # there's some odd characters on which tolower will fail unless we set encoding
+                       trimws(x) # trim leading and trailing whitespace
+                     )
+                   )
+                 }),
+          dataframe[, !character_column]) # leave non-character columns as-is
+  )
+  return(no_whitespace_and_lowercase)
+}
+
+outcomes_normalized <- normalize_chars(outcomes)
+outcome_categories_normalized <- normalize_chars(outcome_categories)
+```
+
+Check that there aren't any duplicates in tables:
+
+```{r}
+unique_outcomes <- unique(outcomes_normalized)
+unique_outcome_categories <- unique(outcome_categories_normalized)
+print(c(nrow(outcomes), nrow(unique_outcomes)))
+print(c(nrow(outcome_categories), nrow(unique_outcome_categories)))
+```
+So actually we do have some duplicate animal records (where the entire record is duplicated, not just the animal id), as well as a number of redundant rows in the outcome categories file.
+
+Join the two tables to each other, to have an outcome category on each row.
+
+```{r}
+has_subtype = unique_outcomes[,'Outcome.Subtype']!=''
+unique_outcomes['Outcome.Type.and.Subtype'] <- trimws(paste(unique_outcomes[,'Outcome.Type'], ':', unique_outcomes[,'Outcome.Subtype']))
+outcomes_with_categories <- merge(unique_outcomes, unique_outcome_categories, by = 'Outcome.Type.and.Subtype')
+```
+
+Did we find a category for all rows?
+
+```{r}
+c(nrow(unique_outcomes), nrow(outcomes_with_categories))
+```
+
+Save off the clean file
+
+```{r}
+write.csv(outcomes_with_categories, file="intakes_outcomes_categories.csv")
+```
+
+Compute length of stay, filter for the year 2017, group by category, and compute the median (and number of observations)
+
+```{r}
+column_names <- colnames(outcomes_with_categories)
+date_columns <- column_names[grepl("Date", column_names)]
+for (column in date_columns) {
+  outcomes_with_categories[,column] = as.POSIXct(outcomes_with_categories[,column], format="%m/%d/%Y %H:%M:%S")
+}
+```
+
+```{r}
+outcomes_with_categories[,'Length.of.Stay'] = as.numeric(outcomes_with_categories[,'Outcome.Date'] - outcomes_with_categories[,'Intake.Date'],
+                                                         units='days')
+```
+
+```{r}
+# install.packages("lubridate")
+library(lubridate)
+year_2017 = year(outcomes_with_categories[,"Outcome.Date"]) == 2017
+outcomes_2017 = outcomes_with_categories[year_2017,]
+print(nrow(outcomes_2017))
+```
+
+```{r, rows.print=20}
+medians <- setNames(
+  aggregate(outcomes_2017[,"Length.of.Stay"],
+            by=list(outcomes_2017[,"Outcome.Category"]),
+            FUN=median),
+  c('Outcome.Category', 'Median.Length.of.Stay.Days'))
+counts <- setNames(
+  aggregate(outcomes_2017[,"Length.of.Stay"],
+            by=list(outcomes_2017[,"Outcome.Category"]),
+            FUN=length),
+  c('Outcome.Category', 'Number.of.Animals'))
+medians_and_counts <- merge(medians, counts, by = "Outcome.Category")
+print(medians_and_counts[order(-medians_and_counts$`Number.of.Animals`),])
+```
+
+```{r}
+write.csv(medians_and_counts, file="medians_by_category_2017.csv")
+```
+
